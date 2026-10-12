@@ -102,7 +102,9 @@ const QUEUES = [
   { k: 'hopeful', label: '有希望！', color: 'var(--green)', hot: c => c.hopeful_waiting > 0,
     hint: c => !c.hopeful ? '还没有' : [c.hopeful_waiting ? `${c.hopeful_waiting} 个轮到你回` : '', c.hopeful_old ? `${c.hopeful_old} 个超过 3 天没动静` : '']
       .filter(Boolean).join(' · ') || '都在等对方回，3 天内' },
-  { k: 'reply', label: '待你回复', color: 'var(--red)', hint: c => c.reply_old ? `${c.reply_old} 个超过 24 小时` : '都在 24 小时内', hot: c => c.reply_old > 0 },
+  { k: 'reply', label: '待你回复', color: 'var(--red)', hot: c => c.reply_old > 0,
+    hint: c => [c.reply - c.reply_old ? `${c.reply - c.reply_old} 封 24 小时内新到` : '', c.reply_old ? `${c.reply_old} 个超过 24 小时` : '']
+      .filter(Boolean).join(' · ') || '没有在等你回的' },
   { k: 'quote', label: '报价待你定价', color: 'var(--amber)', hint: () => '点开填价格，信就拼好了' },
   { k: 'followup', label: '该跟进', color: 'var(--blue)', hint: followupHint },
   { k: 'bounce', label: '退信', color: 'var(--faint)', hint: () => '换邮箱重发或改私信' },
@@ -203,9 +205,10 @@ function timeOf(view, r) {
   if (view === 'bounce') return r.bounced ? r.bounced.at : 0;
   if (view === 'hopeful') return Math.max(r.answered_at || 0, r.waiting_since || 0);
   if (view === 'first') return r.first_at || 0;
+  if (view === 'dm') return r.added_at || 0;
   return r.last_activity || r.first_at || 0;
 }
-const SORT_LABEL = { hopeful: '最近往来', reply: '收到回信', quote: '最近动态', followup: '到期日', bounce: '退信时间', dm: '入表顺序' };
+const SORT_LABEL = { hopeful: '最近往来', reply: '收到回信', quote: '最近动态', followup: '到期日', bounce: '退信时间', dm: '入表时间' };
 function sortSelect(view) {
   const d = sortDir(view), label = SORT_LABEL[view] || '时间';
   return `<select class="sort" data-sort="${view}" title="排序"><option value="fit" ${d === 'fit' ? 'selected' : ''}>画像最合适的在前</option>
@@ -235,11 +238,12 @@ async function renderQueue() {
   const title = QUEUES.find(q => q.k === view).label;
   let body;
   if (!shown.length) body = `<div class="empty">${view === 'reply' ? '没有在等你回复的，干得漂亮。' : view === 'followup' ? '3 天内没有要发的跟进。' : '这里暂时没有要处理的。'}</div>`;
-  else if (view === 'reply') body = groupedReplies(shown);
+  // a time order is followed strictly; the groups (and 有希望！'s "your turn first") only shape the default order
+  else if (view === 'reply') body = dir === 'fit' ? groupedReplies(shown) : shown.map(replyRow).join('');
   else if (view === 'quote') body = shown.map(quoteRow).join('');
   else if (view === 'followup') body = followupRows(shown);
   else if (view === 'bounce') body = shown.map(bounceRow).join('');
-  else if (view === 'hopeful') body = [...shown.filter(r => r.waiting), ...shown.filter(r => !r.waiting)].map(hopefulRow).join('');  // your turn first
+  else if (view === 'hopeful') body = (dir === 'fit' ? [...shown.filter(r => r.waiting), ...shown.filter(r => !r.waiting)] : shown).map(hopefulRow).join('');
   else body = shown.map(dmRow).join('');
   const auto = autoOn();
   const fuHead = view === 'followup' ? `<button class="switch ${auto ? 'on' : ''}" id="fu-auto" title="${auto ? '点一下关掉' : '点一下打开'}">自动跟进 <b>${auto ? '开' : '关'}</b></button>
@@ -280,7 +284,7 @@ function replyRow(r) {
   return `<div class="row" data-h="${esc(r.handle)}">${avatar(r)}
     ${whoCell(r)}
     <div class="what">${r.category ? `<b>${esc(r.category)}</b> · ` : ''}${esc(r.summary || '对方回信了，AI 还没读，点开看原文')}</div>
-    <div class="right">${quoteChip(r.quote_main)}${fitChip(r)}${chip(r.status, STAT[r.status])}
+    <div class="right">${r.came_back ? chip(`标了${r.status}后又来信`, 'red') : ''}${r.offtable ? chip('不在博主表里', 'amber') : ''}${quoteChip(r.quote_main)}${fitChip(r)}${chip(r.status, STAT[r.status])}
       ${r.has_draft ? chip('信已备好', 'accent') : ''}${chip(`等了 ${wait}`, old ? 'red' : '')}${closeBtn(r)}</div></div>`;
 }
 function hopefulRow(r) {
@@ -306,8 +310,11 @@ const REPLY_GROUPS = [
   ['对方拒绝', '可以礼貌结束、点不用回，或者不合作', r => true],
 ];
 function groupedReplies(rows) {
-  const left = [...rows];
-  return REPLY_GROUPS.map(([name, sub, test]) => {
+  // mail from the last 24 hours on top, newest first, so a reply that just came in is never buried; the rest by group
+  const fresh = rows.filter(r => r.waiting_since && Date.now() - r.waiting_since <= 86400000).sort((a, b) => b.waiting_since - a.waiting_since);
+  const left = rows.filter(r => !fresh.includes(r));
+  const head = fresh.length ? `<div class="group-h"><b>最近 24 小时收到</b><span class="count">${fresh.length}</span><span class="sub">刚来的信放最上面，从新到旧</span></div>${fresh.map(replyRow).join('')}` : '';
+  return head + REPLY_GROUPS.map(([name, sub, test]) => {
     const mine = left.filter(test);
     mine.forEach(r => left.splice(left.indexOf(r), 1));
     return mine.length ? `<div class="group-h"><b>${name}</b><span class="count">${mine.length}</span><span class="sub">${sub}</span></div>${mine.map(replyRow).join('')}` : '';
@@ -451,7 +458,7 @@ async function renderAll(main) {
     <select id="all-sort">${[['fit', '画像最合适的在前'], ['act-new', '最近动态：从新到旧'], ['act-old', '最近动态：从旧到新'], ['first-new', '首封日期：从新到旧'], ['first-old', '首封日期：从旧到新']]
       .map(([v, l]) => `<option value="${v}" ${(S.allSort || 'fit') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
     <div class="panel"><table class="grid"><thead><tr><th>博主</th><th>市场</th><th class="num">粉丝</th><th class="num">中位播放</th><th>进度</th><th>合作状态</th><th>下一步</th><th>最后动态</th></tr></thead>
-    <tbody>${rows.slice(0, 400).map(r => `<tr class="click" data-h="${esc(r.handle)}"><td style="max-width:340px"><b><span class="flag">${r.flag || ''}</span>${esc(r.handle)}</b>
+    <tbody>${rows.slice(0, 400).map(r => `<tr class="click" data-h="${esc(r.handle)}"><td style="max-width:340px"><b><span class="flag">${r.flag || ''}</span>${esc(r.handle)}</b>${r.offtable ? ' ' + chip('不在博主表里', 'amber') : ''}
       <div class="pt">${esc(r.portrait || '')}</div><div class="who"><div class="m">${esc(r.platform)}</div></div></td>
       <td>${esc(r.market)}</td><td class="num">${wan(r.followers)}</td><td class="num">${wan(r.median)}</td><td>${chip(r.progress, PROG[r.progress])}</td>
       <td>${chip(r.status, STAT[r.status])}</td><td>${esc(r.next_step)}</td><td style="max-width:280px">${esc(r.last_event)}</td></tr>`).join('')}</tbody></table>
@@ -540,7 +547,7 @@ function renderDrawer(d) {
       <div class="h"><span class="flag">${r.flag || ''}</span>${link ? `<a href="${esc(link)}" target="_blank" rel="noopener">${esc(r.handle)}</a>` : esc(r.handle)}
         ${d.display_name && d.display_name !== r.handle ? `<span class="dname">${esc(d.display_name)}</span>` : ''}</div>
       <div class="m">${esc(r.country)} · ${esc(r.market)}${r.emails && r.emails.length ? ' · ' + esc(r.emails.join(', ')) : ''}</div>
-      <div class="d-chips">${chip(r.progress, PROG[r.progress])}${chip(r.status, STAT[r.status])}${chip(r.next_step)}</div></div>
+      <div class="d-chips">${chip(r.progress, PROG[r.progress])}${chip(r.status, STAT[r.status])}${chip(r.next_step)}${r.came_back ? chip(`标了${r.status}后又来信`, 'red') : ''}${r.offtable ? chip('不在博主表里：只记在看板上，不写飞书', 'amber') : ''}</div></div>
       <div style="display:flex;gap:6px;align-items:center">${['不再联系', '已放弃'].includes(r.status) ? '<button class="btn small" id="d-reopen">恢复合作</button>'
         : '<button class="btn small danger" id="d-dropit">不合作，移除</button>'}<button class="btn ghost" id="d-close" aria-label="收起">✕</button></div></div>
     <div class="d-grid"><div class="d-left">

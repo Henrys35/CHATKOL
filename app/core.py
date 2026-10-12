@@ -105,6 +105,13 @@ QUOTE_START = re.compile(
     r'^\s*(On .{3,200}wrote:|在 .{2,120}写道[:：]|.{0,60}於.{0,80}寫道[:：]|-{2,}\s*(Original Message|原始邮件|原始郵件)|'
     r'From:\s|发件人[:：]|寄件者[:：]|보낸 사람[:：]?|差出人[:：]|20\d\d年\d{1,2}月\d{1,2}日.{0,60}[:：]\s*$|'
     r'20\d\d\. ?\d{1,2}\. ?\d{1,2}\..{0,60}작성[:：]?\s*$|>)', re.M)
+# the same headers in the middle of a line: some replies arrive with all their line breaks gone, and then the quoted
+# original (with the sender's own name in it) was read as part of the creator's reply (2026-10-12: 62 replies)
+QUOTE_INLINE = re.compile(
+    r'On [^<>]{3,120}?<[^>\s]+@[^>\s]+>\s*wrote\s*:|'                                  # Gmail, English
+    r'[^\s<>]{0,40}\s?<[^>\s]+@[^>\s]+>\s*(?:於|于).{0,60}?(?:寫道|写道)\s*[:：]|'       # Gmail, Chinese: "Name <addr>於 …寫道："
+    r'在 .{2,80}?<[^>\s]+@[^>\s]+>\s*写道\s*[:：]|'
+    r'20\d\d[年./-][^<>]{0,60}?<[^>\s]+@[^>\s]+>\s*(?:님이\s*작성\s*[:：]?|[:：])')     # Gmail, Korean and Japanese
 
 
 def now_ms():
@@ -122,8 +129,8 @@ def md(ms):
 def strip_quoted(body):
     """The new part of a reply: everything before the quoted earlier mail."""
     body = (body or '').replace('\r', '')
-    m = QUOTE_START.search(body, 1)
-    return (body[:m.start()] if m else body).strip()
+    cuts = [m.start() for m in (QUOTE_START.search(body, 1), QUOTE_INLINE.search(body, 1)) if m]
+    return (body[:min(cuts)] if cuts else body).strip()
 
 
 def thread_lang(subject, fallback):
@@ -177,6 +184,10 @@ def connect():
         db.execute('ALTER TABLE messages ADD COLUMN attachments TEXT')
     if 'opts' not in {r[1] for r in db.execute('PRAGMA table_info(sends)')}:
         db.execute('ALTER TABLE sends ADD COLUMN opts TEXT')
+    local_cols = {r[1] for r in db.execute('PRAGMA table_info(local)')}
+    for col, kind in (('closed_seen_at', 'INTEGER'), ('board', 'TEXT')):
+        if col not in local_cols:
+            db.execute(f'ALTER TABLE local ADD COLUMN {col} {kind}')
     return db
 
 
@@ -398,7 +409,7 @@ class Feishu:
     def records(self):
         out, page = [], None
         while True:
-            params = {'page_size': 500}
+            params = {'page_size': 500, 'automatic_fields': 'true'}  # adds created_time: when the row entered the table
             if page:
                 params['page_token'] = page
             d = self.call('GET', self.path + '/records', params)
@@ -462,8 +473,45 @@ def creator_from(record):
         'video_log': text(f.get('10条视频核验记录')), 'send_lang': text(f.get('发信语言')) or '英文',
         'contact': text(f.get('联系方式')) or ('邮件' if emails else '私信'), 'reach': text(f.get('触达情况')),
         'content_lang': text(f.get('内容语言')), 'source_tag': text(f.get('来源标签')),
-        'board': {name: f.get(name) for name, _, _ in BOARD_FIELDS},
+        'board': {name: f.get(name) for name, _, _ in BOARD_FIELDS}, 'added_at': record.get('created_time'),
     }
+
+
+LANG_MARKET = {'繁中': '台湾', '韩文': '韩国', '日文': '日本'}
+OUTREACH_NAME = re.compile(r'(?:×|\bx\b)\s+(.+?)\s*(?:[｜|:：—]|様|님|$)', re.I)
+
+
+def offtable_creators(db, creators):
+    """People we emailed who are not (or no longer) in the table but wrote back, so their reply is not lost. They live
+    only on the board: nothing about them goes to Feishu, and what the user fills in for them is kept in `local`."""
+    domain = '@' + ME.split('@')[-1]
+    taken = {h.lower() for h in creators}
+    kept = {r['handle']: json.loads(r['board']) for r in db.execute('SELECT handle, board FROM local WHERE board IS NOT NULL')}
+    out = {}
+    for r in db.execute("SELECT thread_id, at, to_addrs, subject FROM messages WHERE folder='SENT' AND kind='other_out' ORDER BY at"):
+        to = [a for a in json.loads(r['to_addrs'] or '[]') if a and not a.endswith(domain)]
+        if not to or not re.search(PRODUCT_RE, r['subject'] or '', re.I):
+            continue
+        replied = db.execute("SELECT 1 FROM messages WHERE thread_id=? AND folder!='SENT' AND kind='other' AND from_addr NOT LIKE ? "
+                             "AND from_addr NOT LIKE '%mailer-daemon%' AND from_addr NOT LIKE '%postmaster%' LIMIT 1",
+                             (r['thread_id'], '%' + domain)).fetchone()
+        if not replied or any(set(to) & set(c['emails']) for c in out.values()):
+            continue
+        m = OUTREACH_NAME.search(r['subject'] or '')
+        name = re.sub(r'[\s/\\]+', '', m.group(1))[:40] if m else ''
+        name = name or to[0].split('@')[0]
+        if name.lower() in taken:
+            name += '（表外）'
+        taken.add(name.lower())
+        lang = thread_lang(r['subject'], '英文')
+        board = {k: None for k, _, _ in BOARD_FIELDS}
+        board.update(kept.get(name) or {})
+        out[name] = {'handle': name, 'record_id': None, 'offtable': True, 'profile': '', 'country': '',
+                     'market': LANG_MARKET.get(lang, '其他地区'), 'platform': '', 'followers': None, 'median': None, 'ratio': None,
+                     'latest_post': None, 'emails': to, 'email_source': '', 'topic': '', 'topic_evidence': '', 'portrait': '',
+                     'video_log': '', 'send_lang': lang, 'contact': '邮件', 'reach': '已触达', 'content_lang': '', 'source_tag': '',
+                     'board': board, 'added_at': r['at']}
+    return out
 
 
 # ---------------------------------------------------------------- matching mail to creators
@@ -592,7 +640,10 @@ def derive(c, msgs, reads, local, now):
         progress = '已发私信'
     else:
         progress = '未联系'
-    waiting = bool(last_in and (not last_answer or last_in['at'] > last_answer['at']) and status not in CLOSED
+    closed = status in CLOSED
+    # marked 已放弃 / 不再联系, and then they wrote again: back on 待你回复 (the status stays, no follow-ups restart)
+    came_back = bool(closed and last_in and local.get('closed_at') and last_in['at'] > local['closed_at'])
+    waiting = bool(last_in and (not last_answer or last_in['at'] > last_answer['at']) and (not closed or came_back)
                    and local.get('dismissed') != last_in['id'])
     due = None
     if first and not real_in and not bounced and not status:
@@ -639,6 +690,7 @@ def derive(c, msgs, reads, local, now):
         last_event = f"{md(dm_sent)} 已发私信" if dm_sent else '已发私信'
     return {
         'handle': c['handle'], 'progress': progress, 'status': status, 'lang': lang, 'waiting': waiting,
+        'came_back': came_back and waiting,
         'waiting_since': last_in['at'] if waiting else None, 'last_in_id': last_in['id'] if last_in else None,
         'last_in_from': last_in['from_addr'] if last_in else None, 'last_out_id': last_out['id'] if last_out else None,
         'first_at': first['at'] if first else (dm_sent or None), 'first_id': first['id'] if first else None,
@@ -945,6 +997,10 @@ class Board:
         except (LarkError, subprocess.TimeoutExpired) as e:  # keep showing what we have; say why mail is stale
             got, mail_error = {}, str(e)
         match_all(self.db, creators)
+        extra = offtable_creators(self.db, creators)
+        if extra:
+            creators.update(extra)
+            match_all(self.db, creators)
         if not mail_error:
             try:
                 fill_attachment_meta(self.db)
@@ -979,8 +1035,42 @@ class Board:
             for h in json.loads(m['handles'] or '[]'):
                 if h in per:
                     per[h].append(dict(m))
+        for h, at in self.closing_times(local).items():
+            local.setdefault(h, {})['closed_at'] = at
         now = now_ms()
         self.states = {h: derive(c, per[h], reads, local.get(h, {}), now) for h, c in self.creators.items()}
+
+    def closing_times(self, local):
+        """When each creator now marked 已放弃 / 不再联系 got that status: the board's own action if it set it, else the first
+        sync that saw it (set straight in Feishu). Mail they send after that time goes back on 待你回复."""
+        last = {}
+        for a in self.db.execute("SELECT at, handle, kind, detail FROM actions WHERE kind IN ('fields', 'close', 'reopen') ORDER BY id"):
+            if a['kind'] == 'fields':
+                d = json.loads(a['detail'] or '{}')
+                if '合作状态' in d:
+                    last[a['handle']] = a['at'] if d['合作状态'] in CLOSED else None
+            else:
+                last[a['handle']] = a['at'] if a['kind'] == 'close' else None
+        out, changed = {}, False
+        for h, c in self.creators.items():
+            seen = (local.get(h) or {}).get('closed_seen_at')
+            if text(c['board'].get('合作状态')) not in CLOSED:
+                if seen:
+                    self.db.execute('UPDATE local SET closed_seen_at=NULL WHERE handle=?', (h,))
+                    changed = True
+                continue
+            if last.get(h):
+                out[h] = int(datetime.fromisoformat(last[h]).timestamp() * 1000)
+                continue
+            if not seen:
+                seen = now_ms()
+                self.db.execute('INSERT INTO local(handle, closed_seen_at) VALUES(?,?) '
+                                'ON CONFLICT(handle) DO UPDATE SET closed_seen_at=excluded.closed_seen_at', (h, seen))
+                changed = True
+            out[h] = seen
+        if changed:
+            self.db.commit()
+        return out
 
     def write_back(self):
         """Board columns in the Feishu table, only for creators we have reached; human-entered fields are never overwritten."""
@@ -988,7 +1078,7 @@ class Board:
         written = {r['handle']: json.loads(r['data']) for r in self.db.execute('SELECT * FROM written')}
         for h, st in self.states.items():
             c = self.creators[h]
-            if st['progress'] == '未联系':
+            if st['progress'] == '未联系' or not c.get('record_id'):  # no row in the table for people we emailed off it
                 continue
             want = {'进度': st['progress'], '下一步': st['next_step'], '最后动态': st['last_event']}
             current_quote = text(c['board'].get('对方报价'))
@@ -1032,7 +1122,8 @@ class Board:
             'quote_main': main_quote(st['quotes'], c['median']),
             'answered_at': st['answered_at'], 'answer_snippet': st['answer_snippet'],
             'waiting': st['waiting'], 'n_in': st['n_in'], 'n_answers': st['n_answers'],
-            'flag': flag(c['country']),
+            'flag': flag(c['country']), 'came_back': st['came_back'], 'offtable': bool(c.get('offtable')),
+            'added_at': c.get('added_at'),
         }
 
     def queues(self):
@@ -1166,9 +1257,14 @@ class Board:
         clean = {k: v for k, v in allowed.items() if v not in (None, '')}
         cleared = [k for k, v in allowed.items() if v in (None, '')]
         c = self.creators[h]
-        if clean:
+        if not c.get('record_id'):  # not in the table: the board keeps these itself
+            kept = {**{k: v for k, v in c['board'].items() if k in MANUAL_FIELDS}, **allowed}
+            self.db.execute('INSERT INTO local(handle, board) VALUES(?,?) ON CONFLICT(handle) DO UPDATE SET board=excluded.board',
+                            (h, json.dumps(kept, ensure_ascii=False)))
+            self.db.commit()
+        if clean and c.get('record_id'):
             self.fs.update([{'record_id': c['record_id'], 'fields': clean}])
-        if cleared:
+        if cleared and c.get('record_id'):
             self.fs.update([{'record_id': c['record_id'], 'fields': {k: None for k in cleared}}])
         with self.lock:
             c['board'].update(allowed)

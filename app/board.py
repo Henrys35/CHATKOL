@@ -190,7 +190,7 @@ class App:
         # People you are deciding on get the student-audience check now; everyone else only needs a portrait.
         todo = [h for h in dict.fromkeys(first) if 'student_audience' not in have.get(h, {})]
         todo += [h for h in rest if h not in have and h not in todo]
-        todo = todo[:limit]
+        todo = [h for h in todo if not b.creators[h].get('offtable')][:limit]  # nothing to judge from for people off the table
         if not todo:
             return
         batches = [[core.profile_material(b.creators[h]) for h in todo[i:i + 10]] for i in range(0, len(todo), 10)]
