@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="board-token" content="{{TOKEN}}">
+<title>{{NAME}}</title>
+<meta name="board-audience" content="{{AUDIENCE}}">
+<meta name="board-product" content="{{PRODUCT}}">
+<meta name="board-priority" content="{{PRIORITY}}">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark">{{MARK}}</span><span>{{NAME}}</span></div>
+  <div class="search"><input id="search" type="search" placeholder="搜博主账号、邮箱" autocomplete="off"></div>
+  <div class="top-right">
+    <span id="ai-pill" class="pill">AI</span>
+    <span id="sync-pill" class="pill">同步中…</span>
+    <button id="refresh" class="btn">立即刷新</button>
+  </div>
+</header>
+<div class="shell">
+  <nav class="side">
+    <a data-view="today" class="nav active"><span>今天要处理</span><b id="nav-today"></b></a>
+    <a data-view="all" class="nav"><span>全部博主</span><b id="nav-all"></b></a>
+    <a data-view="progress" class="nav"><span>进度</span></a>
+    <a data-view="health" class="nav"><span>发信情况</span></a>
+    <div class="side-foot">数据来自你的 Lark 邮箱和飞书博主表，每 5 分钟自动同步。</div>
+  </nav>
+  <main id="main"><div class="empty">正在加载…</div></main>
+</div>
+<div id="drawer-mask" class="mask"></div>
+<aside id="drawer" class="drawer" aria-hidden="true"></aside>
+<div id="modal" class="modal-wrap"></div>
+<div id="toast" class="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

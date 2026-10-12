@@ -1,0 +1,6 @@
+# your own settings and everything CHATKOL keeps locally: never commit them
+config.json
+data/
+__pycache__/
+*.pyc
+.DS_Store

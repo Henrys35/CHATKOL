@@ -1,0 +1,111 @@
+{
+  "_说明": "CHATKOL 配置。安装时由 agent 按 SETUP.md 和你一起填好，另存为同一层的 config.json。这里不放任何密钥：飞书应用的 App ID 和 Secret 在 feishu.credentials_file 指的文件里（用 scripts/set_credentials.py 写），Claude 登录在 claude.token_file（用 app/setup_claude_token.sh 写），邮箱登录在 lark-cli 里。相对路径都相对这个文件所在的文件夹。带「例：」的都要换成你自己的。",
+  "name": "CHATKOL",
+  "port": 8765,
+  "timezone_hours": 8,
+  "data_dir": "data",
+  "cache_dir": "~/Library/Caches/chatkol",
+  "sender": {
+    "_说明": "发件人：回信署名和 AI 起草都按这个身份写。email 必须是 lark-cli 登录的那个邮箱。",
+    "name": "例：Alex",
+    "title": "例：Partnerships Lead",
+    "company": "例：Acme",
+    "email": "例：alex@acme.com"
+  },
+  "mail": {
+    "_说明": "这一轮触达从哪天开始（YYYY-MM-DD），之前的邮件不算",
+    "since": "2026-10-01"
+  },
+  "feishu": {
+    "_说明": "博主表所在的多维表格。api：表在飞书用 https://open.feishu.cn/open-apis，在 Lark 用 https://open.larksuite.com/open-apis。app_token 是表格链接里 /base/ 后面那段，table_id 是链接里 table= 后面那段。alert_open_id 可选：看板出故障时给谁发消息，用 scripts/find_open_id.py 查，不要就留空。",
+    "api": "https://open.feishu.cn/open-apis",
+    "credentials_file": "~/.config/chatkol/feishu.json",
+    "app_token": "",
+    "table_id": "",
+    "alert_open_id": ""
+  },
+  "claude": {
+    "_说明": "AI 走本机的 claude 命令行和你自己的 Claude 订阅，不用 API key",
+    "model": "claude-sonnet-5-5",
+    "token_file": "~/.config/chatkol/claude_oauth_token"
+  },
+  "product": {
+    "_说明": "AI 读信、写开头、写画像时用的产品信息。about 和 terms 只写真实、能对外说的话：AI 只会用这里的说法，不会自己编数字。",
+    "name": "例：Acme",
+    "about": "例：Acme 是一款……的 App；全球 xx 万用户在用。",
+    "collab": "例：我们买的是博主主账号上的一条付费推广视频；创意和脚本由博主自己写，拍摄前我们只核对一次产品信息。",
+    "terms": "例：一条 60 秒以内的视频发在他的主账号；脚本他写，我们只在拍摄前核对一次产品信息；发布后 3 个工作日内付款；我们会从自己的账号给视频投广告加推（视频的广告权限含在费用里）；另送一年会员。",
+    "creators": "例：健身类博主",
+    "audience": "例：想在家练习的上班族",
+    "audience_short": "例：上班族",
+    "audience_rule": "例：观众主要是专业健身教练、健身房同行的，判「不是」；泛生活博主偶尔发健身的，判「可能」。",
+    "portrait_example": "例：美国女生，分享居家 20 分钟训练，口播加跟练，观众是想减脂的上班族",
+    "tags_example": "例：「居家训练」「减脂」「跟练」「上班族观众」",
+    "never_mention": "",
+    "mail_keywords": [
+      "例：Acme",
+      "collab",
+      "合作"
+    ]
+  },
+  "pricing": {
+    "_说明": "定价参考：按目标 CPM 算参考价（中位播放 ÷ median_divisor，单条不超过 max_usd，单位美元）。不需要就把整项改成 null。",
+    "cpm_usd": 10,
+    "median_divisor": 100,
+    "max_usd": 2000
+  },
+  "priority": {
+    "_说明": "「画像最合适的在前」排序时，播粉比和中位播放都过这条线的排前面",
+    "min_ratio": 0.7,
+    "min_median": 30000
+  },
+  "followup": {
+    "_说明": "自动跟进：首封后几天发跟进一，再隔几天发跟进二。自动跟进默认关，在看板「该跟进」里打开。",
+    "gaps_days": [
+      3,
+      7
+    ],
+    "easykol_grace_days": 0
+  },
+  "budget_usd": 0,
+  "markets": [],
+  "templates": {
+    "_说明": "模板。回复模板决定回信怎么拼；每种语言一个文件，里面的「跟进一」「跟进二」是自动跟进，「私信 · 通用版」是私信清单用的模板。不联系的语言把那一行删掉。",
+    "dir": "templates",
+    "reply": "回复模板.md",
+    "by_language": {
+      "英文": "英文.md",
+      "繁中": "繁中.md",
+      "韩文": "韩文.md",
+      "日文": "日文.md"
+    }
+  },
+  "addons": {
+    "_说明": "回复框里的附加条件开关：label 是按钮上的字，on 是默认开不开，on_for 是哪些语言默认开。每个开关的措辞在回复模板里同名的小节（投流、分成、Pro、排他、标注）。用不到的整项删掉。",
+    "promo": {
+      "label": "投流加推",
+      "on": true
+    },
+    "pro": {
+      "label": "送一年会员",
+      "on": true
+    },
+    "revshare": {
+      "label": "折扣码 50% 分成",
+      "on": false
+    },
+    "excl": {
+      "label": "7 天排他",
+      "on": false
+    },
+    "label": {
+      "label": "标注广告",
+      "on": false,
+      "on_for": [
+        "日文",
+        "韩文"
+      ]
+    }
+  },
+  "nudge_openers": []
+}
